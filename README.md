@@ -54,11 +54,6 @@ Customer_360/
 │   └── 01_customer_360_powerBI.pbix
 ├── 07_GenAI/
 │   └── Customer_360_GenAI.ipynb
-└── 08_Documentation/
-    ├── Project_Inventory.md
-    ├── Architecture_Workflow.md
-    ├── project_tree.txt
-    └── artifact_inventory.txt
 ```
 
 ## Project Phases
