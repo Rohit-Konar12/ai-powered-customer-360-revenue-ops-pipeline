@@ -1,0 +1,15 @@
+# Not uploading
+08_Documentation/
+CheckPoints/
+Cleaned_CSV/
+
+# Too big for GitHub (sample is in 01_Raw_Data/sample/)
+01_Raw_Data/clickstream_500k_events.csv
+
+# Secrets & junk
+.env
+*.key
+__pycache__/
+.ipynb_checkpoints/
+Thumbs.db
+~$*.xlsx
