@@ -35,6 +35,8 @@ The project uses five datasets:
 
 The project includes raw datasets, cleaned CSV files, checkpoint files, and MySQL-ready exports.
 
+**Note:** The two clickstream files in `CheckPoints/` and `Cleaned_CSV/` are zipped because the original CSVs exceed GitHub's 100 MB file limit. Unzip them before use. The raw clickstream file is not included; use the 1,000-row sample in `01_Raw_Data/sample/` or download the full file from Kaggle.
+
 ## Project Structure
 
 ```text
