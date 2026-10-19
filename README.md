@@ -92,7 +92,7 @@ Loaded the prepared datasets into the `customer_360` database, established table
 
 Created four dashboard pages:
 
-1. **Executive Overview** — high-level customer, order, and revenue metrics.
+1. **Executive Overview** — high-level customer, order, and revenue metrics. 
 2. **Customer 360** — customer value, purchasing behaviour, and engagement.
 3. **Product & Sales Performance** — category and product comparisons.
 4. **Support & Engagement** — issue types, sentiment, resolution performance, and digital engagement.
@@ -144,10 +144,13 @@ Revenue values are reported without a currency symbol because the dataset does n
 
 These safeguards reduce risk but do not guarantee that every generated statement is correct.
 
+## ⚠️ Data Note
+The source datasets are synthetic (Kaggle practice data), so several fields such as sentiment, issue type, and acquisition source are almost evenly distributed. The focus of this project is the end-to-end pipeline: auditing, cleaning, modeling, SQL analysis, dashboarding, and GenAI. With real business data, these categories would normally show clear differences.
+
 ## Setup & Execution
 
 ### Prerequisites
-
+- Microsoft Excel
 - Python and Jupyter Notebook
 - MySQL Server and MySQL Workbench
 - Power BI Desktop

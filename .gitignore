@@ -1,8 +1,7 @@
 # Not uploading
 08_Documentation/
-CheckPoints/
-Cleaned_CSV/
-
+Cleaned_CSV/clickstream_mysql.csv
+CheckPoints/clickstream_clean_checkpoint.csv
 # Too big for GitHub (sample is in 01_Raw_Data/sample/)
 01_Raw_Data/clickstream_500k_events.csv
 
