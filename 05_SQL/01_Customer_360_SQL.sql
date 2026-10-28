@@ -144,7 +144,20 @@ WITH customer_engagement AS ( SELECT customer_id, COUNT(*) AS engagement_events 
 WITH customer_revenue AS ( SELECT customer_id, SUM(order_amount) AS total_revenue FROM orders WHERE order_amount IS NOT NULL GROUP BY customer_id), customer_support AS ( SELECT customer_id, COUNT(*) AS support_tickets, ROUND(AVG(resolution_time_hours), 2) AS avg_resolution_time, SUM( CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END ) AS positive_tickets, SUM( CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END ) AS negative_tickets, SUM( CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END ) AS neutral_tickets FROM support_tickets GROUP BY customer_id), customer_analysis AS ( SELECT r.customer_id, r.total_revenue, s.support_tickets, s.avg_resolution_time, s.positive_tickets, s.negative_tickets, s.neutral_tickets FROM customer_revenue r JOIN customer_support s ON r.customer_id = s.customer_id ) SELECT customer_id, ROUND(total_revenue, 2) AS total_revenue, support_tickets, avg_resolution_time, positive_tickets, negative_tickets, neutral_tickets FROM customer_analysis WHERE total_revenue >= ( SELECT AVG(total_revenue) FROM customer_revenue ) AND support_tickets >= ( SELECT AVG(support_tickets) FROM customer_support ) ORDER BY total_revenue DESC LIMIT 20;
 
 -- Customer 360 analytical layer. Customer order metrics.
-CREATE OR REPLACE VIEW vw_customer_order_metrics AS SELECT customer_id, MIN(order_date) AS first_order_date, MAX(order_date) AS last_order_date, COUNT(DISTINCT order_id) AS total_orders ,ROUND(SUM(order_amount), 2) AS total_revenue, SUM(quantity) AS total_quantity, ROUND( AVG( order_amount), 2) AS avg_order_value, DATEDIFF( MAX(order_date), MIN(order_date)) AS customer_lifetime_days, DATEDIFF( (SELECT MAX(order_date) FROM orders), MAX(order_date)) AS days_since_last_order FROM orders WHERE order_amount IS NOT NULL GROUP BY customer_id;
+CREATE OR REPLACE VIEW vw_customer_order_metrics AS
+SELECT
+    customer_id,
+    MIN(order_date) AS first_order_date,
+    MAX(order_date) AS last_order_date,
+    COUNT(DISTINCT order_id) AS total_orders,
+    ROUND(COALESCE(SUM(CASE WHEN status = 'success' THEN order_amount END), 0), 2) AS total_revenue,
+    COALESCE(SUM(CASE WHEN status = 'success' THEN quantity END), 0) AS total_quantity,
+    ROUND(AVG(CASE WHEN status = 'success' THEN order_amount END), 2) AS avg_order_value,
+    DATEDIFF(MAX(order_date), MIN(order_date)) AS customer_lifetime_days,
+    DATEDIFF((SELECT MAX(order_date) FROM orders), MAX(order_date)) AS days_since_last_order
+FROM orders
+WHERE order_amount IS NOT NULL
+GROUP BY customer_id;
 SELECT * FROM vw_customer_order_metrics LIMIT 10;
 -- Customer-level support view.
 CREATE OR REPLACE VIEW vw_customer_support_metrics AS SELECT customer_id, COUNT(*) AS support_tickets, ROUND(AVG(resolution_time_hours), 2) AS avg_resolution_time, SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) AS positive_tickets, SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) AS negative_tickets, SUM(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) AS neutral_tickets FROM support_tickets GROUP BY customer_id;
@@ -259,6 +272,7 @@ SELECT
 FROM orders
 WHERE order_date IS NOT NULL
   AND order_amount IS NOT NULL
+  AND status = 'success'
 GROUP BY
     YEAR(order_date),
     MONTH(order_date),
@@ -283,6 +297,7 @@ FROM products p
 LEFT JOIN orders o
     ON p.product_id = o.product_id
    AND o.order_amount IS NOT NULL
+   AND o.status = 'success'
 
 GROUP BY
     p.product_id,
@@ -322,3 +337,254 @@ SELECT
     (SELECT COUNT(*) FROM products) AS products,
     (SELECT COUNT(*) FROM vw_product_performance) AS product_view,
     (SELECT COUNT(*) FROM vw_monthly_revenue) AS monthly_revenue_rows;
+    
+    
+
+-- Doubt
+
+WITH customer_revenue AS (
+  SELECT customer_id, SUM(order_amount) AS total_revenue
+  FROM orders
+  WHERE order_amount IS NOT NULL AND status = 'success'
+  GROUP BY customer_id
+),
+cumulative AS (
+  SELECT customer_id,
+         SUM(total_revenue) OVER (ORDER BY total_revenue DESC ROWS UNBOUNDED PRECEDING)
+         / SUM(total_revenue) OVER () * 100 AS cum_pct
+  FROM customer_revenue
+)
+SELECT COUNT(*) AS total_customers,
+       SUM(cum_pct <= 80) AS customers_for_80pct_revenue
+FROM cumulative;
+
+SELECT status, COUNT(*) AS orders, ROUND(SUM(order_amount), 2) AS revenue
+FROM orders
+GROUP BY status;
+-- Recency check, counting only successfull purchase
+WITH customer_lifecycle AS (
+  SELECT customer_id,
+         DATEDIFF((SELECT MAX(order_date) FROM orders), MAX(order_date)) AS days_since_last_order
+  FROM orders
+  WHERE order_date IS NOT NULL AND status = 'success'
+  GROUP BY customer_id
+)
+SELECT CASE
+         WHEN days_since_last_order = 0 THEN '0 days'
+         WHEN days_since_last_order BETWEEN 1 AND 30 THEN '1-30 days'
+         WHEN days_since_last_order BETWEEN 31 AND 90 THEN '31-90 days'
+         WHEN days_since_last_order BETWEEN 91 AND 180 THEN '91-180 days'
+         ELSE '181+ days'
+       END AS recency_group,
+       COUNT(*) AS customer_count
+FROM customer_lifecycle
+GROUP BY recency_group
+ORDER BY MIN(days_since_last_order);
+-- how long customers normally wait between successful orders
+WITH purchase_intervals AS (
+  SELECT customer_id, order_date,
+         LAG(order_date) OVER (PARTITION BY customer_id ORDER BY order_date, order_id) AS previous_order_date
+  FROM orders
+  WHERE order_date IS NOT NULL AND status = 'success'
+),
+customer_gaps AS (
+  SELECT DATEDIFF(order_date, previous_order_date) AS days_between_orders
+  FROM purchase_intervals
+  WHERE previous_order_date IS NOT NULL
+)
+SELECT CASE
+         WHEN days_between_orders = 0 THEN 'Same day'
+         WHEN days_between_orders BETWEEN 1 AND 7 THEN '1-7 days'
+         WHEN days_between_orders BETWEEN 8 AND 30 THEN '8-30 days'
+         WHEN days_between_orders BETWEEN 31 AND 90 THEN '31-90 days'
+         WHEN days_between_orders BETWEEN 91 AND 180 THEN '91-180 days'
+         ELSE '181+ days'
+       END AS purchase_gap_group,
+       COUNT(*) AS interval_count
+FROM customer_gaps
+GROUP BY purchase_gap_group
+ORDER BY MIN(days_between_orders);
+-- RFM segmentation.
+CREATE OR REPLACE VIEW vw_customer_rfm_base AS
+SELECT
+    customer_id,
+    DATEDIFF((SELECT MAX(order_date) FROM orders), MAX(order_date)) AS recency_days,
+    COUNT(DISTINCT order_id) AS frequency,
+    ROUND(SUM(order_amount), 2) AS monetary
+FROM orders
+WHERE order_date IS NOT NULL
+  AND order_amount IS NOT NULL
+  AND status = 'success'
+GROUP BY customer_id;
+
+SELECT * FROM vw_customer_rfm_base LIMIT 10;
+-- Scoring customers
+CREATE OR REPLACE VIEW vw_customer_rfm_scores AS
+SELECT
+    customer_id,
+    recency_days,
+    frequency,
+    monetary,
+    NTILE(5) OVER (ORDER BY recency_days DESC) AS r_score,
+    CASE
+        WHEN frequency = 1 THEN 1
+        WHEN frequency = 2 THEN 2
+        WHEN frequency = 3 THEN 3
+        WHEN frequency = 4 THEN 4
+        ELSE 5
+    END AS f_score,
+    NTILE(5) OVER (ORDER BY monetary ASC) AS m_score
+FROM vw_customer_rfm_base;
+SELECT * FROM vw_customer_rfm_scores LIMIT 10;
+SELECT f_score, COUNT(*) AS customers
+FROM vw_customer_rfm_scores
+GROUP BY f_score
+ORDER BY f_score;
+-- Three score into named group
+CREATE OR REPLACE VIEW vw_customer_rfm_segments AS
+SELECT
+    customer_id, recency_days, frequency, monetary,
+    r_score, f_score, m_score,
+    CASE
+        WHEN r_score >= 4 AND f_score >= 4 THEN 'Champions'
+        WHEN r_score >= 3 AND f_score >= 3 THEN 'Loyal'
+        WHEN r_score >= 4 AND f_score <= 2 THEN 'New / Recent'
+        WHEN r_score <= 2 AND f_score >= 4 THEN 'Cant Lose Them'
+        WHEN r_score <= 2 AND f_score = 3 THEN 'At Risk'
+        WHEN r_score <= 2 AND f_score <= 2 THEN 'Lost'
+        ELSE 'Need Attention'
+    END AS rfm_segment
+FROM vw_customer_rfm_scores;
+
+SELECT rfm_segment,
+       COUNT(*) AS customers,
+       ROUND(SUM(monetary) / 1000000, 1) AS revenue_millions
+FROM vw_customer_rfm_segments
+GROUP BY rfm_segment
+ORDER BY revenue_millions DESC;
+
+-- Doubt checking
+SELECT
+    COUNT(*) AS success_orders,
+    SUM(order_date IS NULL) AS orders_without_date,
+    ROUND(SUM(CASE WHEN order_date IS NULL THEN order_amount END) / 1000000, 1) AS revenue_millions_without_date
+FROM orders
+WHERE status = 'success';
+
+CREATE OR REPLACE VIEW vw_customer_rfm_base AS
+SELECT
+    customer_id,
+    DATEDIFF((SELECT MAX(order_date) FROM orders), MAX(order_date)) AS recency_days,
+    COUNT(DISTINCT order_id) AS frequency,
+    ROUND(SUM(order_amount), 2) AS monetary
+FROM orders
+WHERE order_amount IS NOT NULL
+  AND status = 'success'
+GROUP BY customer_id;
+
+SELECT COUNT(*) AS customers,
+       SUM(recency_days IS NULL) AS customers_without_recency,
+       ROUND(SUM(monetary) / 1000000, 1) AS revenue_millions
+FROM vw_customer_rfm_base;
+
+CREATE OR REPLACE VIEW vw_customer_rfm_scores AS
+SELECT
+    b.customer_id,
+    b.recency_days,
+    b.frequency,
+    b.monetary,
+    r.r_score,
+    CASE
+        WHEN b.frequency = 1 THEN 1
+        WHEN b.frequency = 2 THEN 2
+        WHEN b.frequency = 3 THEN 3
+        WHEN b.frequency = 4 THEN 4
+        ELSE 5
+    END AS f_score,
+    NTILE(5) OVER (ORDER BY b.monetary ASC) AS m_score
+FROM vw_customer_rfm_base b
+LEFT JOIN (
+    SELECT customer_id,
+           NTILE(5) OVER (ORDER BY recency_days DESC) AS r_score
+    FROM vw_customer_rfm_base
+    WHERE recency_days IS NOT NULL
+) r ON b.customer_id = r.customer_id;
+
+SELECT r_score, COUNT(*) AS customers
+FROM vw_customer_rfm_scores
+GROUP BY r_score
+ORDER BY r_score;
+
+CREATE OR REPLACE VIEW vw_customer_rfm_segments AS
+SELECT
+    customer_id, recency_days, frequency, monetary,
+    r_score, f_score, m_score,
+    CASE
+        WHEN r_score IS NULL THEN 'No Date Data'
+        WHEN r_score >= 4 AND f_score >= 4 THEN 'Champions'
+        WHEN r_score >= 3 AND f_score >= 3 THEN 'Loyal'
+        WHEN r_score >= 4 AND f_score <= 2 THEN 'New / Recent'
+        WHEN r_score <= 2 AND f_score >= 4 THEN 'Cant Lose Them'
+        WHEN r_score <= 2 AND f_score = 3 THEN 'At Risk'
+        WHEN r_score <= 2 AND f_score <= 2 THEN 'Lost'
+        ELSE 'Need Attention'
+    END AS rfm_segment
+FROM vw_customer_rfm_scores;
+
+SELECT rfm_segment,
+       COUNT(*) AS customers,
+       ROUND(SUM(monetary) / 1000000, 1) AS revenue_millions
+FROM vw_customer_rfm_segments
+GROUP BY rfm_segment
+ORDER BY revenue_millions DESC;
+
+-- Retention analysis (cohort retention)
+WITH v AS (
+  SELECT customer_id, order_date,
+         MIN(order_date) OVER (PARTITION BY customer_id) AS first_date
+  FROM orders
+  WHERE status = 'success' AND order_date IS NOT NULL
+),
+flags AS (
+  SELECT customer_id,
+         MAX(DATEDIFF(order_date, first_date) BETWEEN 1 AND 90)  AS back_90,
+         MAX(DATEDIFF(order_date, first_date) BETWEEN 1 AND 180) AS back_180,
+         MAX(DATEDIFF(order_date, first_date) BETWEEN 1 AND 365) AS back_365
+  FROM v
+  GROUP BY customer_id
+  HAVING MIN(first_date) <= DATE_SUB((SELECT MAX(order_date) FROM orders), INTERVAL 365 DAY)
+)
+SELECT COUNT(*) AS customers,
+       ROUND(AVG(back_90) * 100, 1)  AS pct_returned_90_days,
+       ROUND(AVG(back_180) * 100, 1) AS pct_returned_180_days,
+       ROUND(AVG(back_365) * 100, 1) AS pct_returned_365_days
+FROM flags;
+
+CREATE TABLE retention_summary (
+    window_label VARCHAR(30),
+    sort_order INT,
+    pct_returned DECIMAL(5,1)
+);
+INSERT INTO retention_summary VALUES
+('Within 90 days', 1, 32.8),
+('Within 180 days', 2, 54.7),
+('Within 365 days', 3, 79.6);
+SELECT * FROM retention_summary;
+
+-- Data quality table
+CREATE TABLE order_date_quality (
+    category VARCHAR(40),
+    sort_order INT,
+    pct_orders DECIMAL(5,1)
+);
+INSERT INTO order_date_quality VALUES
+('Valid date', 1, 70.0),
+('Placeholder date', 2, 18.0),
+('Empty in raw data', 3, 6.0),
+('Blanked by ETL (recoverable)', 4, 6.0);
+SELECT * FROM order_date_quality;
+
+
+SELECT product_id, product_name, total_revenue, total_quantity, total_orders
+FROM vw_product_performance
+WHERE product_id = 'PROD-0313';
